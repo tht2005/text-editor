@@ -10,3 +10,5 @@ It's console editor.
 	Ctrl + S: Save
 	Ctrl + Q: Quit
 	Arrow keys: Move
+ 	Home/End
+  	Pg Up/Pg Down
