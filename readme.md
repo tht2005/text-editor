@@ -1,11 +1,11 @@
 # My simple text editor
 It's console editor.
 
-##Command
+## Command
 	texteditor <filename>
 
 
-##Editor features
+## Editor features
 
 	Ctrl + S: Save
 	Ctrl + Q: Quit
