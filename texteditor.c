@@ -14,7 +14,7 @@
 #define		VERSION		"0.0.1"
 
 #define 	MAX_CHAR	1000006
-#define		MAX_LINE	1003
+#define		MAX_LINE	3000
 
 #define 	IS			STDIN_FILENO
 #define 	OS			STDOUT_FILENO
@@ -24,7 +24,11 @@
 
 #define		WIDTH		(E.w - 1)
 #define 	HEIGHT		(E.h - 1)
+#define 	CUR_ROW		(E.top_row + E.cy)
+#define		CUR_COL		(E.left_col + E.cx)
+
 #define 	BLANK		12
+#define		TAB_SIZE	4
 
 enum {
 	BACKSPACE = 127,
@@ -80,23 +84,39 @@ struct buffer {
 
 void append(struct buffer *bf, const char *s, int len) {
 	int new_max_len = bf->max_len;	
-	while(new_max_len < bf->len + len)
+	while(new_max_len <= bf->len + len)
 		new_max_len <<= 1;
-	
-	char *new = CP((void*)realloc(bf->b, new_max_len), "buffer::append memory alloc");
+	char *new = (new_max_len > bf->max_len) ? CP((void*)realloc(bf->b, new_max_len), "buffer::append memory alloc")
+											: bf->b;
 	memcpy(new + bf->len, s, len);
 	bf->b = new;
 	bf->len += len;
 	bf->max_len = new_max_len;
 }
-
+int real_len(struct buffer *bf) {
+	int res = bf->len;
+	for(int i = 0; i < bf->len; ++i)
+		if(bf->b[i] == '\t')
+			res += TAB_SIZE - 1;
+	return res;
+}
 void insert(struct buffer *bf, int pos, int c) {
-	if(pos < 0 || pos > bf->len) {
-		pos = E.cx = bf->len;
-	}	
+	if(pos < 0 || pos > bf->len)
+		CC(-1, "invalid insert index");
+
 	append(bf, " ", 1);
 	memmove(&bf->b[pos + 1], &bf->b[pos], bf->len - pos - 1);
 	bf->b[pos] = c;
+}
+void delete(struct buffer *bf, int pos) {
+	if(pos < 0 || pos >= bf->len)
+		CC(-1, "invalid delete index");
+	if(bf->len == 0)
+		CC(-1, "delete empty buffer");
+	
+	if(pos < bf->len - 1)
+		memmove(&bf->b[pos], &bf->b[pos + 1], bf->len - pos - 1);
+	--bf->len;
 }
 
 int nLine = 0;
@@ -202,6 +222,139 @@ void appendLine(struct buffer *bf, const char* msg) {
 	append(bf, msg, strlen(msg));
 }
 
+void editorInsertRow(int pos, const char *s) {
+	if(pos < nLine) {
+		char *ptr = lineContent[nLine].b;
+		memmove(&lineContent[pos + 1], &lineContent[pos], (nLine - pos) * sizeof(struct buffer));
+		lineContent[pos].b = ptr;
+	}
+
+	lineContent[pos].len = 0;
+	append(&lineContent[pos], s, strlen(s));
+	++nLine;
+}
+void editorDeleteRow(int row) {
+	char *ptr = lineContent[row].b;
+	memmove(&lineContent[row], &lineContent[row + 1], (nLine - 1 - row) * sizeof(struct buffer));
+	--nLine;
+	lineContent[nLine].b = ptr;
+}
+
+void editorCursorMove(int);
+
+void editorInsertChar(int c) {
+	if(CUR_ROW >= nLine) {
+		E.cy = nLine - E.top_row;
+		E.left_col = E.cx = 0;
+		editorInsertRow(nLine, "");
+	}
+
+	int cur_len = real_len(&lineContent[CUR_ROW]);
+
+	if(E.left_col + E.cx > cur_len) {
+		E.cx = cur_len - E.left_col;	
+		return;
+	}	
+
+	for(int i = 0, sum = 0, delta; i <= lineContent[CUR_ROW].len; ++i) {
+		if(E.left_col + E.cx == sum) {
+			insert(&lineContent[CUR_ROW], i, c);
+			for(int _ = (c == '\t') ? TAB_SIZE : 1; _--; ) {
+				editorCursorMove(ARROW_RIGHT);
+			}
+			return;
+		}
+		else if(E.left_col + E.cx < sum) {
+			E.cx = sum - delta - E.left_col;	
+			return;	
+		}
+		if(i < lineContent[CUR_ROW].len) {
+			delta = (lineContent[CUR_ROW].b[i] == '\t') ? TAB_SIZE : 1;
+			sum += delta;
+		}
+	}				
+}
+
+void editorBackspace() {
+	int cur_row = E.top_row + E.cy;
+	if(cur_row < 0 || cur_row >= nLine)
+		return;
+
+	int cur_len = real_len(&lineContent[CUR_ROW]);
+
+	if(E.left_col + E.cx > cur_len) {
+		E.cx = cur_len - E.left_col;	
+		return;
+	}	
+
+	if(E.cx == 0 || lineContent[cur_row].len == 0) {
+		if(cur_row > 0) {
+			editorCursorMove(ARROW_UP);	
+			E.cx = real_len(&lineContent[cur_row - 1]);
+			append(&lineContent[cur_row - 1], lineContent[cur_row].b, lineContent[cur_row].len);
+			editorDeleteRow(cur_row);
+		}	
+	}	
+	else {
+		for(int i = 0, sum = 0, delta; i < lineContent[cur_row].len; ++i) {
+			delta = (lineContent[cur_row].b[i] == '\t') ? TAB_SIZE : 1;
+			sum += delta;
+			if(E.cx == sum) {
+				for(int _ = (lineContent[cur_row].b[i] == '\t') ? TAB_SIZE : 1; _--; )
+					editorCursorMove(ARROW_LEFT);
+				delete(&lineContent[cur_row], i);
+				return;
+			}
+			else if(E.cx < sum) {
+				E.cx = sum - delta;
+				return;
+			}
+		}				
+	}
+}
+void editorDelete() {
+	int cur_row = E.top_row + E.cy;
+	if(cur_row < 0 || cur_row >= nLine)
+		return;
+	if(E.cx >= lineContent[cur_row].len)
+		return;
+	editorCursorMove(ARROW_RIGHT);
+	editorBackspace();
+}
+
+void editorEnter() {
+	if(CUR_ROW < 0 || CUR_ROW >= nLine)
+		return;
+
+	int cur_len = real_len(&lineContent[CUR_ROW]);
+
+	if(E.left_col + E.cx > cur_len) {
+		E.cx = cur_len - E.left_col;	
+		return;
+	}	
+
+	for(int i = 0, sum = 0, delta; i <= lineContent[CUR_ROW].len; ++i) {
+		if(E.left_col + E.cx == sum) {	
+			lineContent[CUR_ROW].b[lineContent[CUR_ROW].len] = 0;
+			lineContent[CUR_ROW].len = i;
+			editorInsertRow(CUR_ROW + 1, &lineContent[CUR_ROW].b[i]);	
+
+			//move cursor
+			editorCursorMove(ARROW_DOWN);
+			E.left_col = E.cx = 0;
+			return;
+		}
+		else if(E.left_col + E.cx < sum) {
+			E.cx = sum - delta - E.left_col;	
+			return;	
+		}
+		if(i < lineContent[CUR_ROW].len) {
+			delta = (lineContent[CUR_ROW].b[i] == '\t') ? TAB_SIZE : 1;
+			sum += delta;
+		}
+	}				
+}
+
 void editorPrintScreenDemo(struct buffer *bf) {
 	for(int i = 0; i < HEIGHT; ++i) {
 		if(i == HEIGHT / 3) {
@@ -224,7 +377,6 @@ void editorPrintScreenDemo(struct buffer *bf) {
 void editorPrintFile(struct buffer *bf) {
 	// print the rectangle (E.top_row, E.left_col) - (E.top_row + HEIGHT - 1, E.left_col + WIDTH - 1) 
 	for(int line = E.top_row; line < E.top_row + HEIGHT; ++line) {
-		// temporary print full line
 		if(line < nLine) {
 			append(bf, lineContent[line].b, lineContent[line].len);
 		}
@@ -234,86 +386,6 @@ void editorPrintFile(struct buffer *bf) {
 		append(bf, "\x1b[K", 3);
 		append(bf, "\r\n", 2);
 	}	
-}
-
-void editorInsertRow(int pos, const char *s) {
-	if(pos < nLine) {
-		char *ptr = lineContent[nLine].b;
-		memmove(&lineContent[pos + 1], &lineContent[pos], (nLine - pos) * sizeof(struct buffer));
-		lineContent[pos].b = ptr;
-	}
-
-	lineContent[pos].len = 0;
-	append(&lineContent[pos], s, strlen(s));
-	++nLine;
-}
-void editorDeleteRow(int row) {
-	char *ptr = lineContent[row].b;
-	memmove(&lineContent[row], &lineContent[row + 1], (nLine - 1 - row) * sizeof(struct buffer));
-	--nLine;
-	lineContent[nLine].b = ptr;
-}
-
-void editorInsertChar(int c) {
-	if(E.top_row + E.cy >= nLine) {
-		E.cy = nLine - E.top_row;
-		E.cx = 0;
-		editorInsertRow(nLine, "");
-	}
-	insert(&lineContent[E.top_row + E.cy], E.left_col + E.cx, c);
-	++E.cx;
-}
-void editorDeleteChar() {
-	int cur_row = E.top_row + E.cy;
-	if(E.cx >= lineContent[cur_row].len)
-		E.cx = lineContent[cur_row].len;
-	if(E.cx < lineContent[cur_row].len)
-		memmove(&lineContent[cur_row].b[E.cx - 1], &lineContent[cur_row].b[E.cx], lineContent[cur_row].len - 1 - E.cx);	
-	--E.cx;
-	--lineContent[cur_row].len;
-}
-
-void editorCursorMove(int);
-
-void editorBackspace() {
-	int cur_row = E.top_row + E.cy;
-	if(cur_row < 0 || cur_row >= nLine)
-		return;
-
-	if(E.cx == 0 || lineContent[cur_row].len == 0) {
-		if(cur_row > 0) {
-			editorCursorMove(ARROW_UP);	
-			E.cx = lineContent[cur_row - 1].len;
-			append(&lineContent[cur_row - 1], lineContent[cur_row].b, lineContent[cur_row].len);
-			editorDeleteRow(cur_row);
-		}	
-	}	
-	else {
-		editorDeleteChar();
-	}
-}
-void editorDelete() {
-	int cur_row = E.top_row + E.cy;
-	if(cur_row < 0 || cur_row >= nLine)
-		return;
-	if(E.cx >= lineContent[cur_row].len)
-		return;
-	editorCursorMove(ARROW_RIGHT);
-	editorBackspace();
-}
-
-void editorEnter() {
-	int cur_row = E.top_row + E.cy;
-	if(cur_row < 0 || cur_row >= nLine)
-		return;
-	if(E.cx < 0 || E.cx >= lineContent[cur_row].len)
-		E.cx = lineContent[cur_row].len;
-
-	lineContent[cur_row].b[lineContent[cur_row].len] = 0;
-	editorInsertRow(cur_row + 1, &lineContent[cur_row].b[E.cx]);	
-	lineContent[cur_row].len = E.cx;
-	editorCursorMove(ARROW_DOWN);
-	E.cx = 0;
 }
 
 void editorPrintScreen(struct buffer *bf) {
@@ -331,10 +403,29 @@ void editorPrintScreen(struct buffer *bf) {
 	}
 	append(bf, "\x1b[K", 3);
 }
+
+void writeTabString(const char* s, int len) {
+	static char buf[MAX_CHAR << 1];
+	int ptr = 0;
+	for(int i = 0; i < len; ++i) {
+		if(s[i] == '\t') {
+			for(int _ = TAB_SIZE; _--; ) {
+				buf[ptr++] = ' ';
+			}
+		}
+		else {
+			buf[ptr++] = s[i];
+		}
+	}
+	buf[ptr] = 0;
+	write(OS, buf, ptr);
+}
+
 void editorRefresh() {
 	struct buffer bf = BUF_INIT;
 	append(&bf, "\x1b[?25l", 6);
 	append(&bf, "\x1b[H", 3);
+
 	editorPrintScreen(&bf);	
 
 	static char buf[50];
@@ -342,7 +433,7 @@ void editorRefresh() {
 	append(&bf, buf, strlen(buf));
 
 	append(&bf, "\x1b[?25h", 6);
-	write(OS, bf.b, bf.len);
+	writeTabString(bf.b, bf.len);
 	free(bf.b);
 }
 
@@ -357,13 +448,11 @@ void editorCursorMove(int key) {
 			}
 			break;
 		case ARROW_DOWN:
-			if(E.top_row + E.cy < nLine + BLANK) {
-				if(E.cy == HEIGHT - 1) {
-					++E.top_row;
-				}
-				else {
-					++E.cy;
-				}
+			if(E.cy != HEIGHT - 1) {
+				++E.cy;
+			}
+			else if(E.top_row + E.cy < nLine + BLANK) {
+				++E.top_row;
 			}
 			break;
 		case ARROW_LEFT:
