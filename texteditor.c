@@ -1,7 +1,8 @@
-#define _DEFAULT_SOURCE
+//#define _DEFAULT_SOURCE
 
 #include <ctype.h>
 #include <errno.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,7 +28,6 @@
 #define 	CUR_ROW		(E.top_row + E.cy)
 #define		CUR_COL		(E.left_col + E.cx)
 
-#define 	BLANK		12
 #define		TAB_SIZE	4
 
 enum {
@@ -65,7 +65,13 @@ void *CP(void *ptr, const char *msg) {
 /*** GLOBAL ***/
 
 FILE *textFile = NULL;
-char fileContent[MAX_CHAR], *fileName=NULL;
+char fileContent[MAX_CHAR], statusText[10000], *fileName=NULL;
+
+void setStatusMsg(const char *s) {
+	int len = strlen(s);
+	memcpy(statusText, s, len);
+	statusText[len] = 0;
+}
 
 struct terminal_properties {
 	int top_row, left_col;
@@ -176,6 +182,11 @@ void fileInit() {
 }
 
 void fileSave() {
+	if(!E.notSave) {
+		setStatusMsg("You didn't modify anything.");
+		return;
+	}
+
 	if(fileName == NULL)
 		return;
 	int ptr = 0;
@@ -191,6 +202,9 @@ void fileSave() {
 	fprintf(f, "%s", fileContent);
 
 	E.notSave = 0;
+	
+	sprintf(fileContent, "%dL, %dB written", nLine, ptr);
+	setStatusMsg(fileContent);
 }
 
 /*** TERMINAL ***/
@@ -355,25 +369,6 @@ void editorEnter() {
 	}				
 }
 
-void editorPrintScreenDemo(struct buffer *bf) {
-	for(int i = 0; i < HEIGHT; ++i) {
-		if(i == HEIGHT / 3) {
-			appendLine(bf, NAME" --- version "VERSION);
-		}
-		else if(i == HEIGHT / 3 + 1) {
-			appendLine(bf, "Use command 'texteditor text.txt' to edit file.");
-		}
-		else if(i == HEIGHT / 3 + 2) {
-			appendLine(bf, "Ctrl + Q to quit.");
-		}
-		else {
-			append(bf, "~", 1);
-		}
-		append(bf, "\x1b[K", 3);
-		append(bf, "\r\n", 2);
-	}
-}
-
 void editorPrintFile(struct buffer *bf) {
 	// print the rectangle (E.top_row, E.left_col) - (E.top_row + HEIGHT - 1, E.left_col + WIDTH - 1) 
 	for(int line = E.top_row; line < E.top_row + HEIGHT; ++line) {
@@ -387,21 +382,75 @@ void editorPrintFile(struct buffer *bf) {
 		append(bf, "\r\n", 2);
 	}	
 }
+void printScrollBar(struct buffer *bf) {
+	append(bf, "\x1b[H", 3);
+	append(bf, "\x1b[999C", 6);
+
+	//calculate scrollbar size, position
+	int pos, size;
+	if(nLine <= HEIGHT) {	// ALL case
+		pos = 0;
+		size = HEIGHT;
+	}
+	else {					// remain case
+		size = HEIGHT * HEIGHT / nLine;
+		pos = E.top_row * (HEIGHT - size) / (nLine - HEIGHT); 
+	}
+
+	for(int i = 0; i < HEIGHT; ++i) {
+		if(pos <= i && i <= pos + size) {
+			append(bf, "#", 1);	
+		}
+		append(bf, "\x1b[B", 3);
+	}
+}
 
 void editorPrintScreen(struct buffer *bf) {
-	if(textFile) {
-		editorPrintFile(bf);		
-	}
-	else {
-		editorPrintScreenDemo(bf);
-	}
+	//display the file in screen
+	editorPrintFile(bf);		
 
 	// last line decoration
-	append(bf, "-- INSERT --", 12);
-	if(E.notSave) {
-		append(bf, " (NOT SAVED)", 12);
+	static char buf[5000];
+	char *ptr = buf;
+	ptr += sprintf(ptr, "-- INSERT --");
+	if(fileName) {
+		ptr += sprintf(ptr, " [%s]", fileName);                                                // this is buggy (fileName too long delete its prefix)
 	}
+	if(E.notSave) {
+		ptr += sprintf(ptr, "(*)");
+	}
+	ptr += sprintf(ptr, "     ");
+	int status_len = strlen(statusText);
+	memcpy(ptr, statusText, status_len);
+	ptr += status_len;
+	*ptr = 0;
+
+	append(bf, buf, ptr - buf);
+	int left_length = ptr - buf;
+
+	// bottom right info-menu
+	ptr = buf;
+	ptr += sprintf(ptr, "%d,%d        ", CUR_ROW, CUR_COL);
+	
+	if(nLine <= HEIGHT) {
+		ptr += sprintf(ptr, "%15s", "All");
+	}
+	else if(E.top_row == 0) {
+		ptr += sprintf(ptr, "%15s", "Top");
+	}
+	else if(E.top_row + HEIGHT == nLine) {
+		ptr += sprintf(ptr, "%15s", "Bottom");
+	}
+	else {
+		ptr += sprintf(ptr, "%15d%%", E.top_row * 100 / (nLine - HEIGHT));
+	}
+	for(int spaces = WIDTH - (ptr - buf) - left_length; spaces--; ) {
+		append(bf, " ", 1);
+	}
+	append(bf, buf, ptr - buf);
 	append(bf, "\x1b[K", 3);
+
+	printScrollBar(bf);
 }
 
 void writeTabString(const char* s, int len) {
@@ -451,7 +500,7 @@ void editorCursorMove(int key) {
 			if(E.cy != HEIGHT - 1) {
 				++E.cy;
 			}
-			else if(E.top_row + E.cy < nLine + BLANK) {
+			else if(E.top_row + E.cy < nLine - 1) {
 				++E.top_row;
 			}
 			break;
@@ -593,6 +642,7 @@ void editorInit() {
 	E.cx = E.cy = 0;
 	E.notSave = 0;
 	CC(getEditorSize(&E.w, &E.h), "getEditorSize");	
+	memset(statusText, 0, sizeof(statusText));
 }
 
 int main(int argc, char **argv) {
@@ -601,9 +651,14 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 	else if(argc == 2) {
-		textFile = CP((void*)fopen(argv[1], "r"), "File not exists");
-		fileName = (char*)malloc(sizeof(argv[1]));
+		fileName = CP((char*)malloc(sizeof(argv[1])), "out of mem");
 		memcpy(fileName, argv[1], sizeof(argv[1]));
+		textFile = CP((void*)fopen(argv[1], "r"), "File not exists");
+	}
+	else {
+		fileName = CP((char*)malloc(1000), "out of mem");
+		memcpy(fileName, "./const/demo.txt", 16);
+		textFile = CP((void*)fopen(fileName, "r"), "Const data error/changed.");
 	}
 
 	enableRawMode();
