@@ -1,0 +1,4 @@
+My text editor coded in C.
+Ctrl + Q to quit.
+
+Try command in readme.md to edit your files.
