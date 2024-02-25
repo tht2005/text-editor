@@ -12,3 +12,7 @@ It's console editor.
 	Arrow keys: Move
  	Home/End
   	Pg Up/Pg Down
+
+## Weak
+	No syntax highlight
+	Not able to handle line length exceed
