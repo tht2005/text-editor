@@ -2,7 +2,7 @@
 It's console editor.
 
 ## Command
-	texteditor <filename>
+	./texteditor <filename>
 
 
 ## Editor features
